@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { AlertTriangle, ThumbsDown, X, ChevronRight } from 'lucide-react'
+import { AlertTriangle, ThumbsDown, X, ChevronRight, Check, Zap } from 'lucide-react'
 import api from '../api'
 
 const FRAMEWORKS = ['', 'NIST-800-53', 'CIS-AWS', 'SOC2']
@@ -24,9 +24,27 @@ function EmptyState() {
 }
 
 function ViolationDrawer({ violation, onClose, onFeedback }) {
-  const [reason, setReason] = useState('')
+  const [reason, setReason]       = useState('')
   const [submitted, setSubmitted] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+
+  // Remediation plan state
+  const [remediation, setRemediation]     = useState(null)   // null=loading, false=none, obj=plan
+  const [remLoading, setRemLoading]       = useState(false)
+  const [approvalStatus, setApprovalStatus] = useState(null)
+  const [approving, setApproving]         = useState(false)
+
+  // Fetch remediation plan whenever the selected violation changes
+  useEffect(() => {
+    if (!violation) return
+    setRemediation(null)
+    setRemLoading(true)
+    setApprovalStatus(null)
+    api.get(`/api/violations/${violation.id}/remediation`)
+      .then(r => { setRemediation(r.data); setApprovalStatus(r.data.approvalStatus) })
+      .catch(() => setRemediation(false))   // 404 = no plan generated yet
+      .finally(() => setRemLoading(false))
+  }, [violation?.id])
 
   if (!violation) return null
 
@@ -35,6 +53,14 @@ function ViolationDrawer({ violation, onClose, onFeedback }) {
     api.post(`/api/violations/${violation.id}/feedback`, { reason: reason || 'Marked as false positive' })
       .then(() => { setSubmitted(true); onFeedback(violation.id) })
       .finally(() => setSubmitting(false))
+  }
+
+  function updateApproval(status) {
+    if (!remediation) return
+    setApproving(true)
+    api.patch(`/api/remediations/${remediation.id}/status`, { status })
+      .then(() => setApprovalStatus(status))
+      .finally(() => setApproving(false))
   }
 
   return (
@@ -50,6 +76,7 @@ function ViolationDrawer({ violation, onClose, onFeedback }) {
         </div>
 
         <div className="drawer-body">
+          {/* Violation metadata */}
           <div className="detail-row">
             <span className="detail-label">Resource</span>
             <span className="detail-value mono">{violation.resourceId}</span>
@@ -78,6 +105,83 @@ function ViolationDrawer({ violation, onClose, onFeedback }) {
               <blockquote className="cited-excerpt">"{violation.citedExcerpt}"</blockquote>
             </div>
           )}
+
+          {/* ── Remediation plan ──────────────────────────────────── */}
+          <hr className="remediation-divider" />
+
+          <div className="detail-section">
+            <div className="detail-label">Remediation plan</div>
+
+            {remLoading && (
+              <div className="remediation-loading">Loading plan…</div>
+            )}
+
+            {!remLoading && remediation === false && (
+              <div className="no-remediation">
+                No plan generated yet — trigger a pipeline run to create one.
+              </div>
+            )}
+
+            {!remLoading && remediation && (
+              <>
+                {remediation.autoRemediable && (
+                  <div style={{ marginBottom: 6 }}>
+                    <span className="auto-badge"><Zap size={10} /> Auto-remediable</span>
+                  </div>
+                )}
+
+                <div className="detail-text" style={{ whiteSpace: 'pre-wrap' }}>
+                  {remediation.steps}
+                </div>
+
+                {remediation.cliCommands && (
+                  <div className="detail-section" style={{ marginTop: 8 }}>
+                    <div className="detail-label">AWS CLI commands</div>
+                    <pre className="code-block">{remediation.cliCommands}</pre>
+                  </div>
+                )}
+
+                {remediation.terraformPatch && (
+                  <div className="detail-section" style={{ marginTop: 8 }}>
+                    <div className="detail-label">Terraform patch</div>
+                    <pre className="code-block">{remediation.terraformPatch}</pre>
+                  </div>
+                )}
+
+                {/* Approve / Reject */}
+                <div className="detail-section" style={{ marginTop: 10 }}>
+                  <div className="detail-label">Human approval</div>
+                  {approvalStatus === 'PENDING' ? (
+                    <div className="approval-row">
+                      <button
+                        className="btn-approve"
+                        onClick={() => updateApproval('APPROVED')}
+                        disabled={approving}
+                      >
+                        <Check size={13} />
+                        {approving ? '…' : 'Approve'}
+                      </button>
+                      <button
+                        className="btn-reject"
+                        onClick={() => updateApproval('REJECTED')}
+                        disabled={approving}
+                      >
+                        <X size={13} />
+                        {approving ? '…' : 'Reject'}
+                      </button>
+                    </div>
+                  ) : (
+                    <div className={`approval-done ${approvalStatus?.toLowerCase()}`}>
+                      {approvalStatus === 'APPROVED' ? '✓ Approved' : '✕ Rejected'}
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* ── False positive feedback ───────────────────────────── */}
+          <hr className="remediation-divider" />
 
           <div className="detail-section feedback-section">
             <div className="detail-label">False positive?</div>
